@@ -69,6 +69,16 @@ LINKS_PAGES = [
     ("iGetoken 活动速报", "https://igetoken.com/deals/"),
 ]
 
+# 主动关键词搜索（Google News RSS，在 GitHub Actions 上可用）
+SEARCH_QUERIES = [
+    "大模型 免费 token 领取",
+    "限时免费 API tokens 活动",
+    "免费额度 智谱 通义 豆包",
+]
+
+# 人工补录文件：抓不到的活动（客户端弹窗 / 微博首发）写这里
+MANUAL_FILE = "manual_deals.json"
+
 HN_QUERIES = ["free credits", "free tokens", "free tier LLM", "API credits"]
 
 
@@ -148,25 +158,55 @@ def from_hn(items):
             add(items, hit.get("title"), target, "Hacker News", published, hit.get("story_text") or "")
 
 
+def parse_rss(xml_text, source, items):
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError:
+        return
+    for node in root.iter():
+        if localname(node.tag) not in ("item", "entry"):
+            continue
+        title = child_text(node, {"title"})
+        link = child_text(node, {"link"})
+        if not link:
+            for child in node:
+                if localname(child.tag) == "link" and child.get("href"):
+                    link = child.get("href")
+                    break
+        published = parse_date(child_text(node, {"pubDate", "published", "updated"}))
+        summary = child_text(node, {"description", "summary", "content"})
+        add(items, title, link, source, published, summary)
+
+
 def from_feeds(items):
     for name, feed_url in FEEDS:
-        try:
-            root = ET.fromstring(fetch(feed_url))
-        except ET.ParseError:
+        parse_rss(fetch(feed_url), name, items)
+
+
+def from_search(items):
+    """主动关键词搜索（Google News RSS，免 API Key，需外网）。"""
+    for query in SEARCH_QUERIES:
+        url = (
+            "https://news.google.com/rss/search?hl=zh-CN&gl=CN&ceid=CN:zh-Hans&q="
+            + urllib.parse.quote(query)
+        )
+        parse_rss(fetch(url), "关键词搜索", items)
+
+
+def from_manual(items):
+    """人工补录：仅靠网页抓不到的活动（客户端弹窗、微博首发）写进 manual_deals.json。"""
+    path = Path(MANUAL_FILE)
+    if not path.exists():
+        return
+    today = now().date()
+    for entry in json.loads(path.read_text(encoding="utf-8")):
+        expires = parse_date(entry.get("expires", ""))
+        if expires and expires.date() < today:
             continue
-        for node in root.iter():
-            if localname(node.tag) not in ("item", "entry"):
-                continue
-            title = child_text(node, {"title"})
-            link = child_text(node, {"link"})
-            if not link:
-                for child in node:
-                    if localname(child.tag) == "link" and child.get("href"):
-                        link = child.get("href")
-                        break
-            published = parse_date(child_text(node, {"pubDate", "published", "updated"}))
-            summary = child_text(node, {"description", "summary", "content"})
-            add(items, title, link, name, published, summary)
+        before = len(items)
+        add(items, entry.get("title", ""), entry.get("url", ""), "人工补录", None, entry.get("note", ""))
+        if len(items) > before:
+            items[-1]["manual"] = True
 
 
 def from_github(items):
@@ -269,7 +309,7 @@ def render(groups, generated_at, total, errors):
         f"# AI 免费额度日报 · {generated_at:%Y-%m-%d}",
         "",
         f"> 生成时间：{generated_at:%Y-%m-%d %H:%M} (UTC+8)　有效线索：{total} 条",
-        "> 来源：V2EX、Hacker News、Solidot、少数派、开源中国、ZCode 更新日志、iGetoken 活动速报、GitHub 公开检索",
+        "> 来源：V2EX、Hacker News、Solidot、少数派、开源中国、ZCode 更新日志、iGetoken 活动速报、关键词搜索、GitHub 公开检索、人工补录",
         "> 自动抓取结果，请自行核实活动真实性与有效期，谨防钓鱼站点。",
         "",
     ]
@@ -417,8 +457,10 @@ def main():
         ("V2EX", from_v2ex),
         ("Hacker News", from_hn),
         ("RSS 订阅", from_feeds),
+        ("关键词搜索", from_search),
         ("公告页", from_links),
         ("GitHub", from_github),
+        ("人工补录", from_manual),
     ]
     for name, func in collectors:
         try:
@@ -428,7 +470,7 @@ def main():
 
     generated_at = now()
     cutoff = generated_at - dt.timedelta(days=MAX_AGE_DAYS)
-    candidates = dedup([i for i in items if relevant(i)])
+    candidates = dedup([i for i in items if i.get("manual") or relevant(i)])
     kept = sorted_items(candidates, cutoff)
 
     groups = {"relay": [], "official": [], "other": []}
