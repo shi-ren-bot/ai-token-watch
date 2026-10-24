@@ -20,6 +20,9 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: 安装依赖
+        run: pip install requests
+
       - name: 生成日报并发送邮件
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

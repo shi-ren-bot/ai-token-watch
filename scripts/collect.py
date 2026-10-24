@@ -21,6 +21,8 @@ from pathlib import Path
 
 TZ = dt.timezone(dt.timedelta(hours=8))
 UA = "Mozilla/5.0 (compatible; ai-token-watch/1.0; +https://github.com)"
+MOBILE_UA = ("Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) "
+             "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1")
 TIMEOUT = 25
 MAX_AGE_DAYS = 14
 
@@ -84,6 +86,14 @@ MANUAL_FILE = "manual_deals.json"
 
 # 微博搜索关键词（需 WEIBO_COOKIE），覆盖只在社媒发布的限时活动
 WEIBO_QUERIES = ["免费 token 领取", "送 tokens 大模型", "免费额度 上线"]
+
+# 百度网页搜索关键词：能索引到自媒体/博客转述的活动
+SERP_QUERIES = [
+    "AI 大模型 免费 token 领取 活动",
+    "大模型 免费送 tokens 活动",
+    "智谱 通义 豆包 Kimi 免费额度",
+    "中转站 公益站 免费 额度 领取",
+]
 
 HN_QUERIES = ["free credits", "free tokens", "free tier LLM", "API credits"]
 
@@ -197,6 +207,42 @@ def from_search(items):
             + urllib.parse.quote(query)
         )
         parse_rss(fetch(url), "关键词搜索", items)
+
+
+def from_serp(items):
+    """百度移动端搜索：能索引到抖音、知乎、CSDN 等对活动的转述。
+
+    桌面版对云端 IP 会返回 JS 挑战页，移动端可稳定返回结果；移动端标题在 <h3> 里，
+    点击链接是 <h3> 之前最近的 <a href>，故按位置配对。
+    """
+    try:
+        import requests
+    except ImportError:
+        return
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": MOBILE_UA,
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        "Referer": "https://m.baidu.com/",
+    })
+    session.get("https://m.baidu.com/", timeout=TIMEOUT)
+    for query in SERP_QUERIES:
+        for _ in range(2):
+            page = session.get("https://m.baidu.com/s", params={"word": query},
+                               timeout=TIMEOUT).text
+            if "<h3" in page:
+                break
+        else:
+            raise RuntimeError(f"关键词「{query}」两次均未拿到结果")
+        for match in re.finditer(r"<h3[^>]*>(.*?)</h3>", page, re.S):
+            before = page[max(0, match.start() - 3000):match.start()]
+            links = re.findall(r'href="(https?://[^"]+)"', before)
+            if not links:
+                continue
+            title = strip_html(re.sub(r"<!--.*?-->", "", match.group(1))).strip()
+            if len(title) < 6 or title.startswith("..."):
+                continue
+            add(items, title, links[-1].replace("&amp;", "&"), "百度搜索")
 
 
 def from_weibo(items):
@@ -343,7 +389,7 @@ def render(groups, generated_at, total, errors):
         f"# AI 免费额度日报 · {generated_at:%Y-%m-%d}",
         "",
         f"> 生成时间：{generated_at:%Y-%m-%d %H:%M} (UTC+8)　有效线索：{total} 条",
-        "> 来源：V2EX、Hacker News、Solidot、少数派、开源中国、NodeSeek、LinuxDo、Hostloc、ZCode 更新日志、iGetoken 活动速报、关键词搜索、微博搜索、GitHub 公开检索、人工补录",
+        "> 来源：V2EX、Hacker News、Solidot、少数派、开源中国、NodeSeek、LinuxDo、Hostloc、ZCode 更新日志、iGetoken 活动速报、关键词搜索、百度搜索、微博搜索、GitHub 公开检索、人工补录",
         "> 自动抓取结果，请自行核实活动真实性与有效期，谨防钓鱼站点。",
         "",
     ]
@@ -492,6 +538,7 @@ def main():
         ("Hacker News", from_hn),
         ("RSS 订阅", from_feeds),
         ("关键词搜索", from_search),
+        ("百度搜索", from_serp),
         ("微博搜索", from_weibo),
         ("公告页", from_links),
         ("GitHub", from_github),
