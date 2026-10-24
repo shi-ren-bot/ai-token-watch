@@ -27,7 +27,7 @@ MAX_AGE_DAYS = 14
 # 必须命中的 AI 相关词（英文按整词匹配，避免 api/app 之类的误命中）
 AI_WORDS = [
     "ai", "人工智能", "大模型", "模型", "gpt", "chatgpt", "openai", "claude", "gemini",
-    "llm", "token", "deepseek", "kimi", "qwen", "通义", "文心", "豆包", "智谱",
+    "llm", "token", "tokens", "deepseek", "kimi", "qwen", "通义", "文心", "豆包", "智谱",
     "glm", "moonshot", "grok", "llama", "mistral", "sora", "midjourney", "cursor",
     "api key", "api 额度",
 ]
@@ -45,9 +45,14 @@ FREE_STRONG = [
     "免费额度", "免费领取", "免费试用", "注册送", "赠送", "白嫖", "兑换码", "邀请码",
     "free credit", "free credits", "free token", "free tokens", "free tier",
     "free trial", "credits", "限时免费", "免费 api", "免费 llm", "免费 gpt", "免费 token",
+    "免费送", "亿 token", "万 token", "领取",
 ]
 
-NOISE_WORDS = ["招聘", "求职", "接单", "外包", "课程报名", "培训招生", "overcharged", "overcharge", "扣费", "误扣", "计费错误"]
+NOISE_WORDS = [
+    "招聘", "求职", "接单", "外包", "课程报名", "培训招生",
+    "overcharged", "overcharge", "扣费", "误扣", "计费错误",
+    "已结束", "已下线", "活动结束",
+]
 
 RELAY_WORDS = ["中转", "镜像", "代理站", "公益站", "共享", "relay", "one-api", "new-api", "反向代理", "中转站"]
 OFFICIAL_WORDS = ["官方", "新用户", "官网", "发布", "上线", "开放", "免费试用", "free tier", "beta", "公测"]
@@ -56,6 +61,12 @@ FEEDS = [
     ("Solidot", "https://www.solidot.org/index.rss"),
     ("少数派", "https://sspai.com/feed"),
     ("开源中国", "https://www.oschina.net/news/rss"),
+]
+
+# 直连公告 / 活动页：抓页面里的链接文字，命中率比泛科技新闻高
+LINKS_PAGES = [
+    ("ZCode 更新日志", "https://zcode.z.ai/cn/changelog"),
+    ("iGetoken 活动速报", "https://igetoken.com/deals/"),
 ]
 
 HN_QUERIES = ["free credits", "free tokens", "free tier LLM", "API credits"]
@@ -104,8 +115,11 @@ def parse_date(value):
 def add(items, title, url, source, published=None, summary=""):
     if not title or not url:
         return
+    clean = strip_html(title)
+    if len(clean) > 60:
+        clean = clean[:58] + "…"
     items.append({
-        "title": strip_html(title),
+        "title": clean,
         "url": url.strip(),
         "source": source,
         "published": published,
@@ -180,6 +194,25 @@ def any_hit(text, words):
     return any(has(text, w) for w in words)
 
 
+def from_links(items):
+    """抓公告 / 活动页里的链接文字作为线索；单页失败不影响其他页。"""
+    failures = []
+    for name, page_url in LINKS_PAGES:
+        try:
+            page = fetch(page_url)
+        except Exception as exc:
+            failures.append(f"{name} {type(exc).__name__}")
+            continue
+        for match in re.finditer(r"<a\s[^>]*href=[\"']([^\"']+)[\"'][^>]*>(.*?)</a>", page, re.S | re.I):
+            href = match.group(1).strip()
+            text = strip_html(match.group(2))
+            if len(text) < 10 or href.startswith(("#", "javascript:", "mailto:")):
+                continue
+            add(items, text[:120], urllib.parse.urljoin(page_url, href), name)
+    if failures and len(failures) == len(LINKS_PAGES):
+        raise RuntimeError("; ".join(failures))
+
+
 def relevant(item):
     text = f"{item['title']} {item['summary']}".lower()
     if not any_hit(text, AI_WORDS):
@@ -236,7 +269,7 @@ def render(groups, generated_at, total, errors):
         f"# AI 免费额度日报 · {generated_at:%Y-%m-%d}",
         "",
         f"> 生成时间：{generated_at:%Y-%m-%d %H:%M} (UTC+8)　有效线索：{total} 条",
-        "> 来源：V2EX、Hacker News、Solidot、少数派、开源中国、GitHub 公开检索",
+        "> 来源：V2EX、Hacker News、Solidot、少数派、开源中国、ZCode 更新日志、iGetoken 活动速报、GitHub 公开检索",
         "> 自动抓取结果，请自行核实活动真实性与有效期，谨防钓鱼站点。",
         "",
     ]
@@ -309,7 +342,11 @@ def md_to_html(text):
         elif re.match(r"^\d+\. ", escaped):
             list_buf.append(re.sub(r"^\d+\. ", "", escaped))
         elif escaped.startswith("  "):
-            blocks.append(f'<p class="desc">{escaped.strip()}</p>')
+            # 列表项的续行：挂到上一条 <li> 里，避免摘要跑到列表上方
+            if list_buf:
+                list_buf[-1] += f'<div class="desc">{escaped.strip()}</div>'
+            else:
+                blocks.append(f'<p class="desc">{escaped.strip()}</p>')
         else:
             flush_list()
             blocks.append(f"<p>{escaped}</p>")
@@ -322,8 +359,8 @@ def md_to_html(text):
     css = (
         "<style>h1{font-size:20px;margin:0 0 12px}h2{font-size:16px;margin:24px 0 8px;"
         "border-bottom:1px solid #eee;padding-bottom:6px}a{color:#0366d6;text-decoration:none}"
-        ".meta{color:#888;font-size:12px;margin:2px 0}.desc{color:#555;margin:2px 0 8px 14px;"
-        "font-size:13px}li{margin:4px 0}ul{padding-left:20px}</style>"
+        ".meta{color:#888;font-size:12px;margin:2px 0}.desc{color:#555;margin:2px 0 4px;"
+        "font-size:13px}li{margin:6px 0}ul{padding-left:20px}</style>"
     )
     return f'<html><head><meta charset="utf-8">{css}</head><body><div style="{style}">' \
         + "".join(blocks) + "</div></body></html>"
@@ -380,6 +417,7 @@ def main():
         ("V2EX", from_v2ex),
         ("Hacker News", from_hn),
         ("RSS 订阅", from_feeds),
+        ("公告页", from_links),
         ("GitHub", from_github),
     ]
     for name, func in collectors:
