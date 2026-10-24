@@ -1,0 +1,40 @@
+name: AI 免费额度日报
+
+on:
+  schedule:
+    # UTC 16:00 = 北京时间次日 00:00
+    - cron: "0 16 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 生成日报并发送邮件
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
+          MAIL_FROM: ${{ secrets.MAIL_FROM }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
+        run: python scripts/collect.py --out reports --summary "$GITHUB_STEP_SUMMARY" --mail
+
+      - name: 上传日报（保留 1 天）
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-token-report
+          path: reports/
+          retention-days: 1
