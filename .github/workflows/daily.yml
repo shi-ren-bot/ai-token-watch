@@ -29,6 +29,7 @@ jobs:
           SMTP_PORT: ${{ secrets.SMTP_PORT }}
           SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_PASS: ${{ secrets.SMTP_PASS }}
+          WEIBO_COOKIE: ${{ secrets.WEIBO_COOKIE }}
         run: python scripts/collect.py --out reports --summary "$GITHUB_STEP_SUMMARY" --mail
 
       - name: 上传日报（保留 1 天）

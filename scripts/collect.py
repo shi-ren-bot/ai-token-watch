@@ -61,6 +61,9 @@ FEEDS = [
     ("Solidot", "https://www.solidot.org/index.rss"),
     ("少数派", "https://sspai.com/feed"),
     ("开源中国", "https://www.oschina.net/news/rss"),
+    ("NodeSeek", "https://www.nodeseek.com/rss.xml"),
+    ("LinuxDo", "https://linux.do/latest.rss"),
+    ("Hostloc", "https://hostloc.com/forum.php?mod=rss"),
 ]
 
 # 直连公告 / 活动页：抓页面里的链接文字，命中率比泛科技新闻高
@@ -78,6 +81,9 @@ SEARCH_QUERIES = [
 
 # 人工补录文件：抓不到的活动（客户端弹窗 / 微博首发）写这里
 MANUAL_FILE = "manual_deals.json"
+
+# 微博搜索关键词（需 WEIBO_COOKIE），覆盖只在社媒发布的限时活动
+WEIBO_QUERIES = ["免费 token 领取", "送 tokens 大模型", "免费额度 上线"]
 
 HN_QUERIES = ["free credits", "free tokens", "free tier LLM", "API credits"]
 
@@ -191,6 +197,34 @@ def from_search(items):
             + urllib.parse.quote(query)
         )
         parse_rss(fetch(url), "关键词搜索", items)
+
+
+def from_weibo(items):
+    """微博关键词搜索，需要 WEIBO_COOKIE（浏览器登录后复制的 Cookie 串），未配置则跳过。"""
+    cookie = os.environ.get("WEIBO_COOKIE", "").strip()
+    if not cookie:
+        return
+    headers = {
+        "Referer": "https://m.weibo.cn/",
+        "MWeibo-Pwa": "1",
+        "X-Requested-With": "XMLHttpRequest",
+        "Cookie": cookie,
+    }
+    for query in WEIBO_QUERIES:
+        url = "https://m.weibo.cn/api/container/getIndex?containerid=100103type=1&q=" + urllib.parse.quote(query)
+        data = json.loads(fetch(url, headers=headers))
+        if data.get("ok") != 1:
+            raise RuntimeError(f"接口返回 ok={data.get('ok')}，Cookie 可能已失效")
+        for card in data.get("data", {}).get("cards", []):
+            group = card.get("card_group") or ([card] if card.get("mblog") else [])
+            for entry in group:
+                blog = entry.get("mblog")
+                if not blog:
+                    continue
+                text = strip_html(blog.get("text", ""))
+                published = parse_date(blog.get("created_at"))
+                add(items, text[:80], f"https://m.weibo.cn/detail/{blog.get('id')}",
+                    "微博搜索", published, text)
 
 
 def from_manual(items):
@@ -309,7 +343,7 @@ def render(groups, generated_at, total, errors):
         f"# AI 免费额度日报 · {generated_at:%Y-%m-%d}",
         "",
         f"> 生成时间：{generated_at:%Y-%m-%d %H:%M} (UTC+8)　有效线索：{total} 条",
-        "> 来源：V2EX、Hacker News、Solidot、少数派、开源中国、ZCode 更新日志、iGetoken 活动速报、关键词搜索、GitHub 公开检索、人工补录",
+        "> 来源：V2EX、Hacker News、Solidot、少数派、开源中国、NodeSeek、LinuxDo、Hostloc、ZCode 更新日志、iGetoken 活动速报、关键词搜索、微博搜索、GitHub 公开检索、人工补录",
         "> 自动抓取结果，请自行核实活动真实性与有效期，谨防钓鱼站点。",
         "",
     ]
@@ -458,6 +492,7 @@ def main():
         ("Hacker News", from_hn),
         ("RSS 订阅", from_feeds),
         ("关键词搜索", from_search),
+        ("微博搜索", from_weibo),
         ("公告页", from_links),
         ("GitHub", from_github),
         ("人工补录", from_manual),
